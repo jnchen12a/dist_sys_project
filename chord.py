@@ -1,7 +1,7 @@
 import hashlib
 from node import Node
 # figure 4 is mostly complete, just need to figure out how messages and stuff work
-# TODO: finish figure 6
+# TODO: finish figure 7? is that even needed to be implemented? why is join implemented twice?
 
 
 class Chord():
@@ -12,12 +12,25 @@ class Chord():
         self.fingerNode = []
         self.fingerStart = []
         self.fingerInterval = []
-        self.predecessor = None
-        self.successor = None
+        self.predecessor = 0
+        self.successor = 0
         self.id = 0
         self.self_node = self_node
         self.join(ip, nPrime)
 
+    def get_predecessor(self) -> int:
+        return self.predecessor
+
+    def set_predecessor(self, p: int) -> None:
+        self.predecessor = p
+
+    def get_successor(self) -> int:
+        return self.successor
+
+    def get_id(self) -> int:
+        return self.id
+
+    # done for now
     def join(self, ip: str, nPrime: int) -> None:
         '''
         Have node n join the chord
@@ -46,17 +59,30 @@ class Chord():
 
             self.predecessor = nPrime
 
-    def _init_finger_table(self, n) -> None:
+    def _init_finger_table(self, nPrime: int) -> None:
         '''
         Initializes node's own finger table
         '''
-        self.finger[0]
+        self.fingerNode[0] = self._find_successor(nPrime, self.fingerStart[0])
+        predecessor = self._get_other_predecessor(nPrime)
+        self._set_other_predecessor(self.successor, self.id)
+        for i in range(self.m - 2):
+            if self.fingerStart[i + 1] >= self.id and self.fingerStart[i + 1] < self.fingerNode[i]:
+                self.fingerNode[i + 1] = self.fingerNode[i]
+            else:
+                self.fingerNode[i + 1] = self._find_successor(nPrime, self.fingerStart[i + 1])
+
 
     def _update_others(self) -> None:
-        pass
+        for i in range(self.m):
+            p = self._execute_find_predecessor(self.id - (2 ** i))
+            self._other_update_finger_table(p, self.id, i + 1)
 
-    def _update_finger_table(self, s, i) -> None:
-        pass
+    def _update_finger_table(self, s: int, i: int) -> None:
+        if s >= self.id and s <= self.fingerNode[i]:
+            self.fingerNode[i] = s
+            p = self.predecessor
+            self._other_update_finger_table(p, s, i)
 
     # need to figure out how messages are sent
     # done for now
@@ -111,3 +137,26 @@ class Chord():
 
     def _hash_string(self, s) -> int:
         return int(hashlib.sha1(s.encode('utf-8')).hexdigest(), 16)
+
+    def _get_other_predecessor(self, nPrime: int) -> int:
+        '''
+        Send message to node nPrime asking for its predecessor
+        '''
+        if self.id == nPrime:
+            return self.predecessor
+        pass
+
+    def _set_other_predecessor(self, nPrime: int, p) -> None:
+        '''
+        Send message to other node nPrime asking to set its predecessor to p
+        '''
+        if self.id == nPrime:
+            self.set_predecessor(p)
+        pass
+
+    def _other_update_finger_table(self, nPrime: int, s: int, i: int) -> None:
+        '''
+        Send message to node nPrime to update its finger table
+        '''
+        if self.id == nPrime:
+            self._update_finger_table(s, i)
