@@ -196,6 +196,8 @@ class Simulation(SharedSimulation):
             "storage_overhead": backup / primary if primary else 0,
             "total_storage_bytes": primary + backup + metadata,
             "primary_payload_bytes": payload, "backup_payload_bytes": backup_payload,
+            "primary_metadata_bytes": primary - payload,
+            "backup_metadata_bytes": backup - backup_payload,
         }
 
 

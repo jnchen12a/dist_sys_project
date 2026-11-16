@@ -13,7 +13,7 @@ import simpy
 from fusion_p2p.coding import (
     CauchyCode, Record, RecordCodec, inverse, invert_matrix, multiply,
 )
-from fusion_p2p.simulation import Simulation, benchmark, run
+from fusion_p2p.simulation import Simulation, _deep_size, benchmark, run
 
 
 CONFIGURATIONS = [(n, k) for n in range(2, 6) for k in range(1, n)]
@@ -192,7 +192,7 @@ def test_incremental_update_only_touches_changed_index(monkeypatch):
     keys = keys_for_owner(simulation, 2, 3)
     for key in keys:
         run(env, simulation.put(key, "initial"))
-    before = {p: dict(simulation.nodes[hosts[0]].parity[p])
+    before = {p: bytes(simulation.nodes[hosts[0]].parity[p])
               for p, hosts in simulation.placement.items()}
     changed_index = simulation.nodes[2].key_to_index[keys[1]]
 
@@ -203,8 +203,10 @@ def test_incremental_update_only_touches_changed_index(monkeypatch):
         patch.setattr(simulation.code, "encode", forbidden)
         run(env, simulation.put(keys[1], "new value"))
     for p, hosts in simulation.placement.items():
-        for index, encoded in before[p].items():
-            after = simulation.nodes[hosts[0]].parity[p][index]
+        width = simulation.code.parity_size
+        for index in range(simulation.committed_range):
+            encoded = before[p][index * width:(index + 1) * width]
+            after = simulation.nodes[hosts[0]].parity[p][index * width:(index + 1) * width]
             if index != changed_index:
                 assert after == encoded
             else:
@@ -215,6 +217,32 @@ def test_incremental_update_only_touches_changed_index(monkeypatch):
     run(env, simulation.put(replacement, "reused"))
     assert simulation.nodes[2].key_to_index[replacement] == changed_index
     assert len(simulation.nodes[2].records) == 3
+    simulation.verify()
+
+
+def test_packed_parity_saves_memory_and_copies_are_independent():
+    env = simpy.Environment()
+    simulation = Simulation(env, 8, 7, max_key_bytes=32, max_value_bytes=8)
+    for key in keys_for_owner(simulation, 0, 8):
+        run(env, simulation.put(key, "value"))
+    width = simulation.code.parity_size
+    streams = [stream for node in simulation.nodes for stream in node.parity.values()]
+    assert all(isinstance(stream, bytearray) for stream in streams)
+    assert len({id(stream) for stream in streams}) == simulation.k * (simulation.k + 1)
+    assert all(len(stream) == simulation.committed_range * width for stream in streams)
+    legacy_size = 0
+    for node in simulation.nodes:
+        legacy = {p: {j: bytes(stream[j * width:(j + 1) * width])
+                      for j in range(simulation.committed_range)}
+                  for p, stream in node.parity.items()}
+        legacy_size += _deep_size(legacy, set())
+    stats = simulation.storage_stats()
+    assert stats["backup_storage_bytes"] < legacy_size
+    assert stats["backup_metadata_bytes"] == stats["backup_storage_bytes"] - stats["backup_payload_bytes"]
+    run(env, simulation.crash([0, 1, 2, 3, 4, 5, 6]))
+    run(env, simulation.recover())
+    restored = [stream for node in simulation.nodes for stream in node.parity.values()]
+    assert len({id(stream) for stream in restored}) == len(restored)
     simulation.verify()
 
 

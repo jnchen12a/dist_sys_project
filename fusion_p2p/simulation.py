@@ -55,7 +55,7 @@ def _deep_size(value, seen):
     elif isinstance(value, (tuple, list, set)):
         size += sum(_deep_size(item, seen) for item in value)
     elif isinstance(value, Record):
-        size += _deep_size(value.__dict__, seen)
+        size += _deep_size(value.key, seen) + _deep_size(value.value, seen)
     return size
 
 
@@ -88,7 +88,7 @@ class Simulation:
         self.latencies = {operation: [] for operation in ("put", "get", "delete", "recover")}
         for host, node in enumerate(self.nodes):
             if scheme == "fusion":
-                node.parity = {p: {} for p, hosts in self.placement.items() if host in hosts}
+                node.parity = {p: bytearray() for p, hosts in self.placement.items() if host in hosts}
             else:
                 node.replicas = {owner: {} for owner in range(n)
                                  if host in self.replica_hosts(owner)}
@@ -135,6 +135,16 @@ class Simulation:
     def _encoded(self, node, index):
         record = node.records[index] if index < len(node.records) else None
         return self.codec.encode(record)
+
+    def _parity_record(self, stream, index):
+        """Read one record from a packed stream, or zeros for its next slot."""
+        start = index * self.code.parity_size
+        if start == len(stream):
+            return self.code.empty
+        end = start + self.code.parity_size
+        if start < 0 or end > len(stream):
+            raise ValueError("Parity stream has an invalid index range")
+        return bytes(stream[start:end])
 
     def put(self, key, value):
         self._start()
@@ -185,7 +195,7 @@ class Simulation:
                 for host in hosts:
                     # The update message carries the weighted delta. Each host
                     # combines it with its own local parity, without remote reads.
-                    current = self.nodes[host].parity[stream].get(index, self.code.empty)
+                    current = self._parity_record(self.nodes[host].parity[stream], index)
                     updated = xor_bytes(current, contribution)
                     changes.append((host, stream, updated))
                     transfers.append(self._rpc(owner, host, 10 + self.code.parity_size))
@@ -211,8 +221,9 @@ class Simulation:
             node.key_to_index[key] = index
         self.committed_range = max(self.committed_range, len(node.records))
         if self.scheme == "fusion":
+            start = index * self.code.parity_size
             for host, stream, updated in changes:
-                self.nodes[host].parity[stream][index] = bytes(bytearray(updated))
+                self.nodes[host].parity[stream][start:start + self.code.parity_size] = updated
         else:
             for host in self.replica_hosts(owner):
                 replica = self.nodes[host].replicas[owner]
@@ -303,7 +314,7 @@ class Simulation:
         for stream, hosts in self.placement.items():
             source = next(host for host in hosts if host not in self.failed)
             # Read only surviving copies. No pre-crash primary state is retained.
-            parity[stream] = dict(self.nodes[source].parity[stream])
+            parity[stream] = bytes(self.nodes[source].parity[stream])
             transfers.append(self._rpc(coordinator, source, 3,
                                        8 + self.committed_range * self.code.parity_size))
         yield from self._parallel(transfers)
@@ -313,7 +324,7 @@ class Simulation:
         for j in range(self.committed_range):
             recovered = self.code.recover(
                 {i: known[i][j] for i in survivors},
-                {p: parity[p][j] for p in parity}, missing, streams, decoder
+                {p: self._parity_record(parity[p], j) for p in parity}, missing, streams, decoder
             )
             for i in missing:
                 decoded[i].append(recovered[i])
@@ -349,18 +360,16 @@ class Simulation:
         if self.scheme == "fusion":
             lost_streams = {p for p, hosts in self.placement.items()
                             if any(i in missing for i in hosts)}
-            rebuilt = {p: {} for p in lost_streams}
+            rebuilt = {p: bytearray() for p in lost_streams}
             for j in range(self.committed_range if lost_streams else 0):
                 records = [self._encoded(node, j) for node in candidate]
                 parity = self.code.encode(records)
                 for p in lost_streams:
-                    rebuilt[p][j] = parity[p]
+                    rebuilt[p].extend(parity[p])
             for i in missing:
                 for p, hosts in self.placement.items():
                     if i in hosts:
-                        candidate[i].parity[p] = {
-                            j: bytes(bytearray(value)) for j, value in rebuilt[p].items()
-                        }
+                        candidate[i].parity[p] = bytearray(rebuilt[p])
                         transfers.append(self._rpc(coordinator, i,
                                                    10 + self.committed_range * self.code.parity_size))
         else:
@@ -403,11 +412,11 @@ class Simulation:
                     raise ValueError("Duplicate key or wrong owner")
                 all_keys.add(key)
         if self.scheme == "fusion":
-            expected = {p: {} for p in range(self.k)}
+            expected = {p: bytearray() for p in range(self.k)}
             for j in range(self.committed_range):
                 parity = self.code.encode([self._encoded(node, j) for node in nodes])
                 for p in range(self.k):
-                    expected[p][j] = parity[p]
+                    expected[p].extend(parity[p])
             for host, node in enumerate(nodes):
                 required = {p: expected[p] for p, hosts in self.placement.items() if host in hosts}
                 if node.parity != required or node.replicas:
@@ -442,8 +451,7 @@ class Simulation:
             primary_payload += sum(len(key.encode("utf-8")) + len(value.encode("utf-8"))
                                    for key, value in node.store.items())
             if self.scheme == "fusion":
-                backup_payload += sum(len(record) for stream in node.parity.values()
-                                      for record in stream.values())
+                backup_payload += sum(len(stream) for stream in node.parity.values())
             else:
                 backup_payload += sum(self._replica_payload(replica) for replica in node.replicas.values())
         metadata = _deep_size((self.node_ids, self.placement, self.code.matrix,
@@ -454,6 +462,8 @@ class Simulation:
             "storage_overhead": backup / primary if primary else 0,
             "total_storage_bytes": primary + backup + metadata,
             "primary_payload_bytes": primary_payload, "backup_payload_bytes": backup_payload,
+            "primary_metadata_bytes": primary - primary_payload,
+            "backup_metadata_bytes": backup - backup_payload,
         }
 
 

@@ -84,6 +84,13 @@ New keys reuse the smallest free slot or append. Deletions leave holes. A
 committed simulator-level `committed_range` preserves the largest allocated index
 range even if the largest primary fails. Absent slots contribute zero records.
 
+Primary `Record` objects use dataclass slots. Each hosted parity stream is one
+contiguous `bytearray`, with record `j` at byte offset `j * parity_record_bytes`.
+Writes replace only that record's slice. Each host owns an independent buffer.
+Recovery rebuilds the same packed layout. GF(256) coefficient rows are stored as
+`bytes`, reducing matrix metadata. These representations avoid per-record parity
+dictionaries, individual parity `bytes` objects, and primary attribute dictionaries.
+
 For parity stream `p` and primary position `i`, the coefficient is
 `inverse(p XOR (k + i))` in GF(2^w). The field width is chosen automatically as
 `max(8, ceil(log2(n+k)))`, keeping the two field-element sets disjoint for every
@@ -158,6 +165,9 @@ configuration metadata is reported separately. `storage_overhead` is backup byte
 divided by primary bytes; total bytes also include global metadata. These are
 Python representation measurements and depend on interpreter/container allocation.
 Raw UTF-8 primary payload and encoded backup payload sizes are also exported.
+`primary_metadata_bytes` and `backup_metadata_bytes` report the differences
+between representation totals and their payload counters, including Python and
+encoding overhead. They help distinguish encoded data from storage overhead.
 
 For equal padded arrays of `L` bytes per primary, ideal backup payload is about
 `n*k*L` for replication and `k*(k+1)*L` for this fusion placement. The actual
@@ -171,23 +181,26 @@ Times are simulated units and backup sizes include Python metadata.
 
 | n | k | Scheme | Backup bytes | Mean write | Mean read | Mean delete | Recovery | Messages | Bytes transferred |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 4 | 2 | Fusion | 82,004 | 6.7445 | 2.8133 | 7.4306 | 12.2589 | 1,480 | 178,574 |
+| 4 | 2 | Fusion | 58,472 | 6.7445 | 2.8133 | 7.4306 | 12.2589 | 1,480 | 178,574 |
 | 4 | 2 | Replication | 56,448 | 6.7443 | 2.8133 | 7.4291 | 12.1590 | 852 | 84,371 |
-| 8 | 1 | Fusion | 21,568 | 13.4620 | 9.4601 | 14.2169 | 12.2031 | 3,121 | 307,383 |
+| 8 | 1 | Fusion | 15,840 | 13.4620 | 9.4601 | 14.2169 | 12.2031 | 3,121 | 307,383 |
 | 8 | 1 | Replication | 57,788 | 13.4618 | 9.4601 | 14.2154 | 12.1112 | 2,667 | 214,592 |
 
-The `(8,1)` case used 62.7% fewer backup bytes with fusion. The `(4,2)` case used
-45.3% more. Fusion had higher recovery CPU cost and transferred more bytes in
+The `(8,1)` case used 72.6% fewer backup bytes with fusion. The `(4,2)` case used
+37.3% more. Fusion had higher recovery CPU cost and transferred more bytes in
 these runs. Simulated latency is dominated by parallel message delays and excludes
 that CPU cost.
 
-The fusion pytest suite passes 275 tests. It covers every valid `k` and every
+The fusion pytest suite passes 276 tests. It covers every valid `k` and every
 failure subset of sizes 1 through `k` for rings of 2 through 5 nodes, for both
 schemes, with writes and a second failure episode after recovery. A larger-field
 coding test recovers 128 missing primaries out of 129. A 256-node simulation
 checks wider parity records, recovery, and storage accounting. Other tests check malformed records,
 GF arithmetic against polynomial multiplication, Cauchy submatrices, incremental
 updates, slot reuse, empty/uneven maps, request blocking, and reproducible CSV metrics.
+The memory regression test compares packed parity to the former dictionary
+representation and checks that independently stored copies remain independent
+after recovery with only one surviving node.
 
 To benchmark all valid `k` on an eight-node ring, run:
 
@@ -200,3 +213,10 @@ As `k` grows, this placement stores `k*(k+1)` parity-stream copies and sends
 updates to those copies. Recovery factors an `r` by `r` matrix once, with cubic
 cost in the number `r` of failed primaries, then reuses that inverse across indices.
 Large rings and failure sets therefore require more CPU and memory.
+
+For the smaller all-`k` workload above, the packed representation reduced fusion
+backup memory at `n=8,k=7` from 35,296 to 18,552 bytes. Standard replication used
+22,948 bytes. Fusion total memory fell from 47,774 to 28,311 bytes, compared with
+26,276 for replication. Encoded payload, placement, message counts, and simulated
+timings were identical before and after the memory changes. Padding, uneven owner
+sizes, primary index maps, and configuration metadata still contribute overhead.

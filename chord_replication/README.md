@@ -103,6 +103,8 @@ node/role independently. Raw payload counters are also included. These memory
 measurements depend on Python and container allocation. Simulated latency excludes
 CPU coding time and shared-link contention. Routing uses successor hops in both
 schemes, preserving comparable lookup costs in this static experiment.
+`primary_metadata_bytes` and `backup_metadata_bytes` expose representation bytes
+minus their respective payload counters, including Python and encoding overhead.
 
 All 119 replication tests pass, including every valid `k` and every failure
 subset of sizes 1 through `k` on rings of 2 through 5 nodes, recovery followed by another write and
@@ -113,9 +115,9 @@ target records per node, 128-byte values, delay 2, and bandwidth 100000.
 
 | n | k | Scheme | Backup bytes | Mean write | Recovery |
 | --- | --- | --- | --- | --- | --- |
-| 4 | 2 | Fusion | 82,004 | 6.7445 | 12.2589 |
+| 4 | 2 | Fusion | 58,472 | 6.7445 | 12.2589 |
 | 4 | 2 | Chord replication | 42,592 | 6.7442 | 12.1507 |
-| 8 | 1 | Fusion | 21,568 | 13.4620 | 12.2031 |
+| 8 | 1 | Fusion | 15,840 | 13.4620 | 12.2031 |
 | 8 | 1 | Chord replication | 42,896 | 13.4617 | 12.1055 |
 
 Use this folder's paired benchmark for comparisons against conventional map

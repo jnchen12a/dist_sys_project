@@ -5,7 +5,7 @@ from functools import cache
 import struct
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Record:
     key: str
     value: str
@@ -215,7 +215,9 @@ class CauchyCode:
         self.empty = bytes(self.parity_size)
         # Disjoint x={0,...,k-1}, y={k,...,k+n-1}. Every square
         # submatrix of this Cauchy matrix is nonsingular.
-        self.matrix = [[self.field.inverse(p ^ (k + i)) for i in range(n)] for p in range(k)]
+        row_type = bytes if self.field.bits == 8 else tuple
+        self.matrix = [row_type(self.field.inverse(p ^ (k + i)) for i in range(n))
+                       for p in range(k)]
 
     def encode(self, records):
         if len(records) != self.n:
